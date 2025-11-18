@@ -1,0 +1,19 @@
+node_modules
+venv/
+__pycache__/
+*.pyc
+*.pkl
+*.onnx
+# Python
+
+# Node
+node_modules/
+
+# Models / large binaries
+*.pt
+*.onnx
+*.pkl
+
+# Editor / OS
+.vscode/
+.DS_Store
