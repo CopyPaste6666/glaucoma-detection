@@ -1,48 +1,58 @@
 import torch
-import cv2
 import numpy as np
+import cv2
 
-def generate_heatmap(model, image_tensor, target_class=None):
+def generate_gradcam(model, image, transform, device):
     model.eval()
-    
-    # ✅ EfficientNetV2 uses `features` instead of `layer4`
-    target_layer = model.features[-1]
 
-    gradients = []
+    # ✅ Correct last convolutional layer for EfficientNetV2
+    target_layer = model.features[-2]
+
     activations = []
-
-    def backward_hook(module, grad_input, grad_output):
-        gradients.append(grad_output[0])
+    gradients = []
 
     def forward_hook(module, input, output):
         activations.append(output)
 
-    # Register hooks
-    target_layer.register_forward_hook(forward_hook)
-    target_layer.register_backward_hook(backward_hook)
+    def backward_hook(module, grad_input, grad_output):
+        gradients.append(grad_output[0])
+
+    # ✅ Use safe hooks
+    fh = target_layer.register_forward_hook(forward_hook)
+    bh = target_layer.register_full_backward_hook(backward_hook)
 
     # Forward pass
-    output = model(image_tensor)
-    if target_class is None:
-        target_class = output.argmax(dim=1).item()
+    x = transform(image).unsqueeze(0).to(device)
+    output = model(x)
+    class_idx = output.argmax(dim=1).item()
 
-    # Backward pass for target class
+    # Backward pass
     model.zero_grad()
-    class_score = output[0, target_class]
-    class_score.backward()
+    output[0, class_idx].backward()
 
-    # Get stored gradients and activations
-    grads = gradients[0].cpu().data.numpy()[0]
-    acts = activations[0].cpu().data.numpy()[0]
+    # Get data
+    acts = activations[0]        # [1, C, H, W]
+    grads = gradients[0]         # [1, C, H, W]
 
-    weights = np.mean(grads, axis=(1, 2))
-    cam = np.zeros(acts.shape[1:], dtype=np.float32)
+    # Global Average Pooling on gradients
+    weights = grads.mean(dim=(2, 3), keepdim=True)
 
-    for i, w in enumerate(weights):
-        cam += w * acts[i]
+    # Weighted sum
+    cam = (weights * acts).sum(dim=1, keepdim=False)
 
-    cam = np.maximum(cam, 0)
-    cam = cv2.resize(cam, (224, 224))
-    cam = cam - np.min(cam)
-    cam = cam / np.max(cam)
-    return cam
+    # ReLU
+    cam = torch.relu(cam)
+
+    # Normalize
+    cam = cam.squeeze().detach().cpu().numpy()
+    cam -= cam.min()
+    cam /= (cam.max() + 1e-8)
+
+    # Resize to input size
+    cam = cv2.resize(cam, (384, 384))
+
+    # Cleanup hooks
+    fh.remove()
+    bh.remove()
+
+    return cam.tolist()
